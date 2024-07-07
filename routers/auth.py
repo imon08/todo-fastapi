@@ -1,21 +1,28 @@
 from datetime import timedelta, datetime, timezone
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from models import Users
 from typing import Annotated
 from database import SessionLocal
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from starlette import status
-from fastapi.security import OAuth2PasswordRequestForm
-from jose import jwt
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
+from jose import JWTError, jwt
 
-router = APIRouter()
+router = APIRouter(prefix="/auth", tags=["auth"])
 
 SECRET_KEY = "197b2c37c391bed93fe80344fe73b806947a65e36206e05a1a23c2fa12702fe3"
 ALGORITHM = "HS256"
 
 bcrypt_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_bearer = OAuth2PasswordBearer(tokenUrl="auth/token")
+
+"""
+users already present:
+username: robi, password: test1234
+username: imon, password: password
+"""
 
 
 class CreateUserRequest(BaseModel):
@@ -52,14 +59,34 @@ def authenticate_user(username: str, password: str, db):
     return user
 
 
-def create_access_token(username: str, user_id: int, expires_delta: timedelta):
-    encode = {"sub": username, "id": user_id}
-    expires = datetime.utcnow() + expires_delta
+def create_access_token(
+    username: str, user_id: int, role: str, expires_delta: timedelta
+):
+    encode = {"sub": username, "id": user_id, "role": role}
+    expires = datetime.now(timezone.utc) + expires_delta
     encode.update({"exp": expires})
-    return str(jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM))
+    return jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-@router.post("/auth", status_code=status.HTTP_201_CREATED)
+async def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        user_id: int = payload.get("id")
+        user_role: str = payload.get("role")
+        if username is None or user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate user",
+            )
+        return {"user": username, "id": user_id, "role": user_role}
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate user"
+        )
+
+
+@router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_user(db: db_dependency, create_user_reqest: CreateUserRequest):
     create_user_model = Users(
         email=create_user_reqest.email,
@@ -74,12 +101,23 @@ async def create_user(db: db_dependency, create_user_reqest: CreateUserRequest):
     db.commit()
 
 
+@router.get("/users", status_code=status.HTTP_200_OK)
+async def read_all_users(db: db_dependency):
+    user_model = db.query(Users).all()
+    return user_model
+
+
 @router.post("/token", response_model=Token)
 async def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()], db: db_dependency
 ):
     user = authenticate_user(form_data.username, form_data.password, db)
     if not user:
-        return "Failed authentication"
-    token = create_access_token(user.username, user.id, timedelta(minutes=20))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate user",
+        )
+    token = create_access_token(
+        user.username, user.id, user.role, timedelta(minutes=20)
+    )
     return {"access_token": token, "token_type": "bearer"}
