@@ -1,5 +1,5 @@
+
 from typing import Annotated
-import httpcore
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from fastapi import APIRouter, Depends, HTTPException
@@ -52,3 +52,15 @@ async def change_user_password(
     db.add(user_model)
     db.commit()
 
+
+@router.put("/updatePhoneNo", status_code=status.HTTP_204_NO_CONTENT)
+async def update_phone_number(
+    user:user_dependency, db:db_dependency, phone_number:str
+):
+    if user is None:
+        raise HTTPException(status_code=402, detail="Authentication failed")
+    
+    user_model =  db.query(Users).filter(Users.id == user.get("id")).first()
+    user_model.phone_number =  phone_number
+    db.add(user_model)
+    db.commit()
